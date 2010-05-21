@@ -49,61 +49,114 @@ module Cucumber
         _tableish(html, row_selector, column_selectors)
       end
 
-      def _tableish(html, row_selector, column_selectors) #:nodoc
-        doc = Nokogiri::HTML(html)
-        spans = nil
-        max_cols = 0
+      def _row_width(row, column_selectors)
+        cells = _select_cells(column_selectors, row)
 
-        # Parse the table.
-        rows = doc.search(row_selector).map do |row|
-          cells = case(column_selectors)
+        cells.inject(0) do |result, cell|
+          colspan = cell['colspan'].nil? ? 1 : cell['colspan'].to_i
+          result + colspan
+        end
+      end
+
+      def _column_height(rows)
+        rows.size
+      end
+
+      def _select_cells(column_selectors, row)
+        case (column_selectors)
           when String
             row.search(column_selectors)
           when Proc
             column_selectors.call(row)
+        end
+      end
+
+      def _pad_grid_with_blanks(grid)
+        grid.each do |grid_row|
+          grid_row.size.times do |i|
+            grid_row[i] = "" if grid_row[i] == nil
           end
+        end
+      end
 
-          # TODO: max_cols should be sum of colspans
-          max_cols = [max_cols, cells.length].max
+      def _cell_value(cell)
+        case cell
+          when String then
+            cell.strip
+          when nil then
+            ''
+          else
+            cell.text.strip
+        end
+      end
 
-          spans ||= Array.new(max_cols, 1)
+      # Comments:
+      # First row defines width
 
-          cell_index = 0
+      def _tableish(html, row_selector, column_selectors) #:nodoc
+        doc = Nokogiri::HTML(html)
+        # Parse the table.
+        rows = doc.search(row_selector)
 
-          cells = (0...spans.length).inject([]) do |array, n|
-            span = spans[n]
+        max_columns = _row_width(rows[0], column_selectors)
+        max_rows = _column_height(rows)
 
-            cell = if span > 1
-              row_span, col_span = 1, 1
-              nil
-            else
-              cell = cells[cell_index]
+        # Initialize a 2 dimensional array representing the size of the table in tableish format
+        grid = Array.new(max_rows) { Array.new(max_columns, nil) }
 
-              row_span, col_span = _parse_spans(cell)
+        table_row_index = 0
+        grid.each_with_index do |grid_row, grid_row_index|
+          row = rows[table_row_index]
 
-              if col_span > 1
-                ((n + 1)...(n + col_span)).each do |m|
-                  spans[m] = row_span + 1
+          cells = _select_cells(column_selectors, row)
+          table_column_index = 0
+          grid_row.size.times do |grid_column_index|
+            next if grid[grid_row_index][grid_column_index] != nil
+
+            cell = cells[table_column_index]
+            if cell
+              col_span, row_span = 1, 1
+              row_span = cell['rowspan'].to_i - 1 if cell['rowspan']
+              col_span = cell['colspan'].to_i - 1 if cell['colspan']
+
+              # draw blank cells based on colspan and rowspan
+              if cell['rowspan'] && cell['colspan']
+                row_span.times do |row_offset|
+                  row_offset_index = grid_row_index + (row_offset + 1)
+                  col_span.times do |col_offset|
+                    col_offset_index = grid_column_index + (col_offset + 1)
+                    grid[row_offset_index][col_offset_index] = "" unless row_offset_index >= rows.size || col_offset_index >= max_columns
+                  end
                 end
               end
 
-              cell_index +=1
-              cell
+              if cell['rowspan']
+                row_span.times do |row_span_offset|
+                  row_offset_index = grid_row_index + (row_span_offset + 1)
+                  grid[row_offset_index][grid_column_index] = "" unless row_offset_index >= rows.size
+                end
+              end
+
+              if cell['colspan']
+                col_span.times do |col_span_offset|
+                  col_offset_index = grid_column_index + (col_span_offset + 1)
+                  grid[grid_row_index][col_offset_index] = "" unless col_offset_index >= max_columns
+                end
+              end
+
+              # print cell value into grid and move to next table column, only if cell hasn't been touched yet
+              if grid[grid_row_index][grid_column_index] == nil
+                table_column_index += 1
+                grid[grid_row_index][grid_column_index] = _cell_value(cell)
+              end
             end
-
-            spans[n] = row_span > 1 ? row_span : ([span - 1, 1].max)
-
-            array << case cell
-              when String then cell.strip
-              when nil then ''
-              else cell.text.strip
-            end
-
-            array
           end
-
-          cells
+          table_row_index += 1
         end
+
+        _pad_grid_with_blanks(grid)
+
+        grid
       end
 
       def _parse_spans(cell)
